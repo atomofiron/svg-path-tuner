@@ -4,12 +4,36 @@ use std::process::exit;
 const SEPARATOR: char = ' ';
 
 fn main() {
+    let scale = parse_scale();
     loop {
-        work();
+        work(scale);
     }
 }
 
-fn work() {
+fn parse_scale() -> f32 {
+    let scale = std::env::args()
+        .collect::<Vec<String>>()
+        .get(1)
+        .map(|scale| {
+            let (divide, value) = match scale.chars().nth(0) {
+                Some('/') => (true, scale[1..].to_owned()),
+                _ => (false, scale.to_owned()),
+            };
+            let value = value.parse::<i32>()
+                .unwrap_or_else(|_| panic!("value is wrong"));
+            let mut value = value as f32;
+            if divide {
+                value = 1.0 / value
+            }
+            value
+        }).unwrap_or(1.0);
+    if scale <= 0.0 {
+        panic!("scale must be greater than 0");
+    };
+    return scale;
+}
+
+fn work(scale: f32) {
     print!("input path: ");
     io::stdout().flush().unwrap();
 
@@ -59,11 +83,11 @@ fn work() {
         parts.push(part);
     }
     println!("parts: {}", parts.join(", "));
-    print_parts(&parts, true);
-    print_parts(&parts, false);
+    print_parts(&parts, true, scale);
+    print_parts(&parts, false, scale);
 }
 
-fn print_parts(parts: &[String], relative: bool) {
+fn print_parts(parts: &[String], relative: bool, scale: f32) {
     let mut x = 0.0;
     let mut y = 0.0;
     let mut index = 0;
@@ -122,17 +146,17 @@ fn print_parts(parts: &[String], relative: bool) {
             let hv = matches!(command, 'h' | 'v' | 'H' | 'V');
             if relative {
                 if "mhlcsqtMHLCSQT".contains(command) {
-                    print_coordinate(to_x - x, false);
+                    print_coordinate(to_x - x, false, scale);
                 }
                 if "mvlcsqtMVLCSQT".contains(command) {
-                    print_coordinate(to_y - y, !hv);
+                    print_coordinate(to_y - y, !hv, scale);
                 }
             } else {
                 if "mhlcsqtMHLCSQT".contains(command) {
-                    print_coordinate(to_x, false);
+                    print_coordinate(to_x, false, scale);
                 }
                 if "mvlcsqtMVLCSQT".contains(command) {
-                    print_coordinate(to_y, !hv);
+                    print_coordinate(to_y, !hv, scale);
                 }
             }
         }
@@ -157,8 +181,8 @@ fn print_part(part: &str, allow_separator: bool) {
     }
 }
 
-fn print_coordinate(value: f32, allow_separator: bool) {
-    let calced = fix(value);
+fn print_coordinate(value: f32, allow_separator: bool, scale: f32) {
+    let calced = fix(value / scale);
     if allow_separator && calced >= 0.0 {
         print!("{}", SEPARATOR);
     }
