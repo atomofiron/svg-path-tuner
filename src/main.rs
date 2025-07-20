@@ -182,7 +182,7 @@ fn print_part(part: &str, allow_separator: bool) {
 }
 
 fn print_coordinate(value: f32, allow_separator: bool, scale: f32) {
-    let calced = fix(value / scale);
+    let calced = fix(value * scale);
     if allow_separator && calced >= 0.0 {
         print!("{}", SEPARATOR);
     }
