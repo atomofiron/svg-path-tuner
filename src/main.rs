@@ -59,13 +59,13 @@ fn work(scale: f32) {
         match c {
             'm' | 'a' | 'h' | 'v' | 'l' | 'c' | 's' | 'q' | 't' | 'z' |
             'M' | 'A' | 'H' | 'V' | 'L' | 'C' | 'S' | 'Q' | 'T' | 'Z' |
-            ',' | ' ' | '-' => {
+            ',' | ' ' | '-' | '+' => {
                 if !part.is_empty() {
                     parts.push(part.clone());
                     part.clear();
                 }
                 match c {
-                    ' ' | ',' => {}
+                    ' ' | ',' | '+' => {}
                     '-' => part.push('-'),
                     _ => parts.push(c.to_string()),
                 }
@@ -107,9 +107,9 @@ fn print_parts(parts: &[String], relative: bool, scale: f32) {
 
         let points = match command {
             'a' | 'A' => {
-                print_part(&parts[index], false);
+                print_coordinate(parts[index].parse::<f32>().unwrap(), false, scale);
                 index += 1;
-                print_part(&parts[index], true);
+                print_coordinate(parts[index].parse::<f32>().unwrap(), true, scale);
                 index += 1;
                 print_part(&parts[index], true);
                 index += 1;
@@ -126,7 +126,7 @@ fn print_parts(parts: &[String], relative: bool, scale: f32) {
             _ => panic!("command {command}, index {}", index - 1),
         };
 
-        for _ in 0..points {
+        for point in 0..points {
             match command {
                 'h' => { to_x = x + parts[index].parse::<f32>().unwrap(); index += 1; }
                 'v' => { to_y = y + parts[index].parse::<f32>().unwrap(); index += 1; }
@@ -144,18 +144,19 @@ fn print_parts(parts: &[String], relative: bool, scale: f32) {
             }
 
             let hv = matches!(command, 'h' | 'v' | 'H' | 'V');
+            let a = point > 0 || matches!(command, 'a' | 'A');
             if relative {
-                if "mhlcsqtMHLCSQT".contains(command) {
-                    print_coordinate(to_x - x, false, scale);
+                if "mahlcsqtMAHLCSQT".contains(command) {
+                    print_coordinate(to_x - x, a, scale);
                 }
-                if "mvlcsqtMVLCSQT".contains(command) {
+                if "mavlcsqtMAVLCSQT".contains(command) {
                     print_coordinate(to_y - y, !hv, scale);
                 }
             } else {
-                if "mhlcsqtMHLCSQT".contains(command) {
-                    print_coordinate(to_x, false, scale);
+                if "mahlcsqtMAHLCSQT".contains(command) {
+                    print_coordinate(to_x, a, scale);
                 }
-                if "mvlcsqtMVLCSQT".contains(command) {
+                if "mavlcsqtMAVLCSQT".contains(command) {
                     print_coordinate(to_y, !hv, scale);
                 }
             }
