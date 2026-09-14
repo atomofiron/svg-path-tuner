@@ -12,6 +12,8 @@
 - without files the path is read from stdin, `-t` limits the output to one form
 - with files it scales `android:pathData`, `android:viewportWidth` and `android:viewportHeight`
   (arc radii too, arc flags and rotation stay as is) and rewrites every `.xml` file in place
+- coordinates are computed in exact decimal integer math and rounded to 4 decimals on output,
+  so no floating point noise reaches the path
 
 ## Example
 ```

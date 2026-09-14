@@ -1,11 +1,15 @@
 mod args;
 mod coordination;
+mod fixed;
+mod scale;
+use crate::args::Args;
+use crate::coordination::Coordination;
+use crate::fixed::Fixed;
+use crate::scale::Scale;
+use clap::Parser;
 use std::fs;
 use std::io::{self, Write};
 use std::process::exit;
-use clap::Parser;
-use crate::args::Args;
-use crate::coordination::Coordination;
 
 const SEPARATOR: char = ' ';
 const PATH_DATA: &str = "android:pathData";
@@ -29,7 +33,7 @@ fn main() {
     }
 }
 
-fn work(scale: f32, coordination: Option<Coordination>) {
+fn work(scale: Scale, coordination: Option<Coordination>) {
     print!("input path: ");
     io::stdout().flush().unwrap();
 
@@ -45,13 +49,13 @@ fn work(scale: f32, coordination: Option<Coordination>) {
         Some(Coordination::Relative) => println!("{}", build_path(&parts, true, scale)),
         Some(Coordination::Absolute) => println!("{}", build_path(&parts, false, scale)),
         None => {
-            println!("{}", build_path(&parts, true, scale));
-            println!("{}", build_path(&parts, false, scale));
+            println!("\nrelative: {}", build_path(&parts, true, scale));
+            println!("\nabsolute: {}", build_path(&parts, false, scale));
         }
     }
 }
 
-fn tune_file(file: &str, scale: f32, coordination: Coordination) {
+fn tune_file(file: &str, scale: Scale, coordination: Coordination) {
     let xml = fs::read_to_string(file).unwrap_or_else(|error| panic!("{file}: {error}"));
     let (xml, paths) = map_attribute(&xml, PATH_DATA, |value| {
         scale_path_data(value, scale, coordination)
@@ -59,7 +63,7 @@ fn tune_file(file: &str, scale: f32, coordination: Coordination) {
     let (xml, widths) = map_attribute(&xml, VIEWPORT_WIDTH, |value| scale_number(value, scale));
     let (xml, heights) = map_attribute(&xml, VIEWPORT_HEIGHT, |value| scale_number(value, scale));
     fs::write(file, xml).unwrap_or_else(|error| panic!("{file}: {error}"));
-    println!("{file}: {} pathData, {} viewport, scale {scale}", paths, widths + heights);
+    println!("{file}: {paths} pathData, {} viewport, scale {scale}", widths + heights);
 }
 
 /// Maps every quoted value of `attribute`, keeping the rest of the document untouched.
@@ -122,7 +126,7 @@ fn trim_ascii_space(value: &str) -> &str {
     value.trim_start_matches(|c: char| c.is_ascii_whitespace())
 }
 
-fn scale_path_data(value: &str, scale: f32, coordination: Coordination) -> String {
+fn scale_path_data(value: &str, scale: Scale, coordination: Coordination) -> String {
     let parts = tokenize(value);
     if parts.is_empty() {
         return value.to_owned();
@@ -130,9 +134,9 @@ fn scale_path_data(value: &str, scale: f32, coordination: Coordination) -> Strin
     build_path(&parts, coordination == Coordination::Relative, scale)
 }
 
-fn scale_number(value: &str, scale: f32) -> String {
-    match value.trim().parse::<f32>() {
-        Ok(number) => format_number(fix(number * scale)),
+fn scale_number(value: &str, scale: Scale) -> String {
+    match fixed::parse(value.trim()) {
+        Ok(number) => fixed::format(scale.apply(number)),
         Err(_) => value.to_owned(),
     }
 }
@@ -179,17 +183,13 @@ fn push_part(parts: &mut Vec<String>, part: &mut String) {
 }
 
 fn is_command(c: char) -> bool {
-    matches!(
-        c,
-        'm' | 'a' | 'h' | 'v' | 'l' | 'c' | 's' | 'q' | 't' | 'z'
-            | 'M' | 'A' | 'H' | 'V' | 'L' | 'C' | 'S' | 'Q' | 'T' | 'Z'
-    )
+    matches!(c, 'm' | 'a' | 'h' | 'v' | 'l' | 'c' | 's' | 'q' | 't' | 'z' | 'M' | 'A' | 'H' | 'V' | 'L' | 'C' | 'S' | 'Q' | 'T' | 'Z')
 }
 
-fn build_path(parts: &[String], relative: bool, scale: f32) -> String {
+fn build_path(parts: &[String], relative: bool, scale: Scale) -> String {
     let mut out = String::new();
-    let mut x = 0.0;
-    let mut y = 0.0;
+    let mut x: Fixed = 0;
+    let mut y: Fixed = 0;
     let mut index = 0;
 
     while index < parts.len() {
@@ -211,9 +211,11 @@ fn build_path(parts: &[String], relative: bool, scale: f32) -> String {
             let mut to_y = y;
 
             if matches!(letter, 'a' | 'A') {
-                write_coordinate(&mut out, parts[index].parse::<f32>().unwrap(), false, scale);
+                let rx = scale.apply(number(&parts[index]));
+                write_coordinate(&mut out, rx, false);
                 index += 1;
-                write_coordinate(&mut out, parts[index].parse::<f32>().unwrap(), true, scale);
+                let ry = scale.apply(number(&parts[index]));
+                write_coordinate(&mut out, ry, true);
                 index += 1;
                 write_part(&mut out, &parts[index], true);
                 index += 1;
@@ -234,41 +236,32 @@ fn build_path(parts: &[String], relative: bool, scale: f32) -> String {
 
             for point in 0..points {
                 match letter {
-                    'h' => { to_x = x + parts[index].parse::<f32>().unwrap(); index += 1; }
-                    'v' => { to_y = y + parts[index].parse::<f32>().unwrap(); index += 1; }
-                    'H' => { to_x = parts[index].parse::<f32>().unwrap(); index += 1; }
-                    'V' => { to_y = parts[index].parse::<f32>().unwrap(); index += 1; }
+                    'h' => { to_x = x + scale.apply(number(&parts[index])); index += 1; }
+                    'v' => { to_y = y + scale.apply(number(&parts[index])); index += 1; }
+                    'H' => { to_x = scale.apply(number(&parts[index])); index += 1; }
+                    'V' => { to_y = scale.apply(number(&parts[index])); index += 1; }
                     'm' | 'l' | 't' | 'c' | 's' | 'q' | 'a' => {
-                        to_x = x + parts[index].parse::<f32>().unwrap(); index += 1;
-                        to_y = y + parts[index].parse::<f32>().unwrap(); index += 1;
+                        to_x = x + scale.apply(number(&parts[index])); index += 1;
+                        to_y = y + scale.apply(number(&parts[index])); index += 1;
                     }
                     'M' | 'L' | 'T' | 'C' | 'S' | 'Q' | 'A' => {
-                        to_x = parts[index].parse::<f32>().unwrap(); index += 1;
-                        to_y = parts[index].parse::<f32>().unwrap(); index += 1;
+                        to_x = scale.apply(number(&parts[index])); index += 1;
+                        to_y = scale.apply(number(&parts[index])); index += 1;
                     }
                     _ => panic!(),
                 }
 
                 let hv = matches!(letter, 'h' | 'v' | 'H' | 'V');
                 let a = point > 0 || matches!(letter, 'a' | 'A');
-                if relative {
-                    if "mahlcsqtMAHLCSQT".contains(letter) {
-                        write_coordinate(&mut out, to_x - x, a, scale);
-                    }
-                    if "mavlcsqtMAVLCSQT".contains(letter) {
-                        write_coordinate(&mut out, to_y - y, !hv, scale);
-                    }
-                } else {
-                    if "mahlcsqtMAHLCSQT".contains(letter) {
-                        write_coordinate(&mut out, to_x, a, scale);
-                    }
-                    if "mavlcsqtMAVLCSQT".contains(letter) {
-                        write_coordinate(&mut out, to_y, !hv, scale);
-                    }
+                if "mahlcsqtMAHLCSQT".contains(letter) {
+                    write_coordinate(&mut out, if relative { to_x - x } else { to_x }, a);
+                }
+                if "mavlcsqtMAVLCSQT".contains(letter) {
+                    write_coordinate(&mut out, if relative { to_y - y } else { to_y }, !hv);
                 }
             }
-            x = fix(to_x);
-            y = fix(to_y);
+            x = to_x;
+            y = to_y;
 
             // a command reuses its letter for the implicit parameter sets, moveto turns into lineto
             if points == 0 || index == parts.len() || is_command(parts[index].chars().nth(0).unwrap()) {
@@ -284,15 +277,8 @@ fn build_path(parts: &[String], relative: bool, scale: f32) -> String {
     out
 }
 
-fn fix(v: f32) -> f32 {
-    (v * 10_000_000.0).round() / 10_000_000.0
-}
-
-fn format_number(value: f32) -> String {
-    match value.fract() {
-        0.0 => (value as i32).to_string(),
-        _ => value.to_string(),
-    }
+fn number(token: &str) -> Fixed {
+    fixed::parse(token).unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn write_part(out: &mut String, part: &str, allow_separator: bool) {
@@ -306,10 +292,9 @@ fn write_part(out: &mut String, part: &str, allow_separator: bool) {
     }
 }
 
-fn write_coordinate(out: &mut String, value: f32, allow_separator: bool, scale: f32) {
-    let calced = fix(value * scale);
-    if allow_separator && calced >= 0.0 {
+fn write_coordinate(out: &mut String, value: Fixed, allow_separator: bool) {
+    if allow_separator && value >= 0 {
         out.push(SEPARATOR);
     }
-    out.push_str(&format_number(calced));
+    out.push_str(&fixed::format(value));
 }
