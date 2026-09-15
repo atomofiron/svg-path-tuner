@@ -3,9 +3,13 @@ use clap::{CommandFactory, Parser};
 use std::fs;
 use std::path::Path;
 
-use crate::coordination::Coordination;
 use crate::ext::path::is_xml;
-use crate::size::Size;
+use coordination::Coordination;
+use size::Size;
+
+pub mod coordination;
+pub mod scale;
+pub mod size;
 
 /// Scales a vector path: reads one from stdin, or rewrites Android vector .xml files in place.
 #[derive(Parser)]

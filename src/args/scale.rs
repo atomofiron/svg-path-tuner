@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
 
+use crate::args::size::Size;
 use crate::ext::Rslt;
 use crate::fixed::{self, Fixed};
-use crate::size::Size;
 
 /// Ratio of one axis, kept as a fraction so scaling stays exact integer math.
 #[derive(Clone, Copy)]

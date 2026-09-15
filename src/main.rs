@@ -1,22 +1,19 @@
 mod args;
-mod coordination;
 mod ext;
 mod fixed;
-mod scale;
-mod size;
 
 use crate::args::{Args, Mode};
-use crate::coordination::Coordination;
-use crate::ext::path::is_xml;
 use crate::ext::Rslt;
+use crate::ext::path::is_xml;
+use crate::ext::print::PrintExt;
 use crate::fixed::Fixed;
-use crate::scale::Scale;
-use crate::size::Size;
+use args::coordination::Coordination;
+use args::scale::Scale;
+use args::size::Size;
 use clap::Parser;
 use std::fs;
 use std::io;
 use std::ops::Range;
-use crate::ext::print::PrintExt;
 
 const SEPARATOR: char = ' ';
 const PATH_DATA: &str = "android:pathData";
