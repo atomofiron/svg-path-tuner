@@ -1,3 +1,4 @@
+pub mod path;
 pub mod print;
 
 use std::error::Error;

@@ -1,15 +1,18 @@
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
+use std::fs;
+use std::path::Path;
 
 use crate::coordination::Coordination;
+use crate::ext::path::is_xml;
 use crate::size::Size;
 
 /// Scales a vector path: reads one from stdin, or rewrites Android vector .xml files in place.
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Args {
-    /// .xml files to scale and rewrite in place
-    #[arg(value_name = "FILE", value_parser = xml_file)]
+    /// .xml files, or folders with them, to scale and rewrite in place
+    #[arg(value_name = "PATH", value_parser = input_path)]
     files: Vec<String>,
 
     /// target viewport size, W or WxH, the ratios come from each file viewport
@@ -25,7 +28,7 @@ pub struct Args {
 pub enum Mode {
     /// One path per line from stdin, both coordinations are printed without a target.
     Stdin { coordination: Option<Coordination> },
-    /// Files scaled and rewritten in place.
+    /// Inputs scaled and rewritten in place, a folder gives the .xml files in it.
     Files { coordination: Coordination, files: Vec<String>, size: Option<Size> },
 }
 
@@ -51,10 +54,12 @@ impl Args {
     }
 }
 
-fn xml_file(value: &str) -> Result<String, String> {
-    if value.to_ascii_lowercase().ends_with(".xml") {
+/// An .xml file, a folder with them, or a path the run reports as missing.
+fn input_path(value: &str) -> Result<String, String> {
+    let folder = fs::metadata(value).is_ok_and(|metadata| metadata.is_dir());
+    if is_xml(Path::new(value)) || folder {
         Ok(value.to_owned())
     } else {
-        Err(format!("{value} is not an .xml file"))
+        Err(format!("{value} is not an .xml file or a folder"))
     }
 }

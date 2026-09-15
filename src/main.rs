@@ -7,13 +7,14 @@ mod size;
 
 use crate::args::{Args, Mode};
 use crate::coordination::Coordination;
+use crate::ext::path::is_xml;
 use crate::ext::Rslt;
 use crate::fixed::Fixed;
 use crate::scale::Scale;
 use crate::size::Size;
 use clap::Parser;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::ops::Range;
 use crate::ext::print::PrintExt;
 
@@ -31,19 +32,46 @@ fn main() -> Rslt<()> {
     match mode {
         Mode::Stdin { coordination } => work(coordination),
         Mode::Files { coordination, files, size } => {
+            let mut total = 0;
             let mut skipped = 0;
-            for file in &files {
-                if let Err(error) = tune_file(file, size, coordination) {
-                    error.eprintln();
-                    skipped += 1;
+            for input in &files {
+                let expanded = xml_files(input);
+                if expanded.is_empty() {
+                    eprintln!("{input}: no .xml files in it");
+                    continue;
+                }
+                total += expanded.len();
+                for file in &expanded {
+                    if let Err(error) = tune_file(file, size, coordination) {
+                        error.eprintln();
+                        skipped += 1;
+                    }
                 }
             }
             match skipped {
                 0 => Ok(()),
-                skipped => Err(format!("{skipped} of {} files were skipped", files.len()).into()),
+                skipped => Err(format!("{skipped} of {total} files were skipped").into()),
             }
         }
     }
+}
+
+/// Expands one input into .xml files: a folder gives its own .xml children, without recursion.
+fn xml_files(input: &str) -> Vec<String> {
+    if !fs::metadata(input).is_ok_and(|metadata| metadata.is_dir()) {
+        return vec![input.to_owned()]; // not a folder, the file is read as it is
+    }
+    let Ok(entries) = fs::read_dir(input) else {
+        return Vec::new(); // the folder is there but cannot be listed
+    };
+    let mut files: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_xml(path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    files
 }
 
 /// Renders the paths read from stdin one per line, an empty line or the end of the input ends it.
@@ -56,8 +84,11 @@ fn work(coordination: Option<Coordination>) -> Rslt<()> {
         line.clear();
         stdin.read_line(&mut line)
             .map_err(|error| format!("stdin: {error}"))?;
+        if line.is_empty() {
+            return Ok(()); // the end of the input ends the loop
+        }
         if line.trim().is_empty() {
-            continue
+            continue; // a blank line carries no path
         }
 
         let parts = tokenize(line.trim());
@@ -80,6 +111,15 @@ fn work(coordination: Option<Coordination>) -> Rslt<()> {
 /// Rewrites one file in place, an error when it was skipped and nothing was written.
 fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) -> Rslt<()> {
     let xml = fs::read_to_string(file).map_err(|error| format!("{file}: {error}, the file was skipped"))?;
+    if !xml.contains("<vector") {
+        eprintln!("{file}: no <vector> in the file, the file was skipped");
+        return Ok(());
+    }
+    // the path data of such a file lives in strings.xml, the viewport alone cannot be scaled
+    if xml.contains("android:pathData=\"@string") {
+        eprintln!("{file}: it references @string, the file was skipped");
+        return Ok(());
+    }
     let scale = Scale::fit(read_viewport(&xml), size)
         .map_err(|error| format!("{file}: {error}, the file was skipped"))?;
     let (xml, paths) = map_attribute(&xml, PATH_DATA, |value| {
@@ -227,19 +267,32 @@ fn is_command(c: char) -> bool {
     matches!(c, 'm' | 'a' | 'h' | 'v' | 'l' | 'c' | 's' | 'q' | 't' | 'z' | 'M' | 'A' | 'H' | 'V' | 'L' | 'C' | 'S' | 'Q' | 'T' | 'Z')
 }
 
-fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option<usize>) {
+/// Whether the token is a command letter rather than a parameter.
+fn is_command_token(token: &str) -> bool {
+    token.chars().next().is_some_and(is_command)
+}
+
+/// A command that came without its parameters, the parser leaves it out and keeps the rest.
+struct Incomplete {
+    letter: char,
+    got: usize,
+    needed: usize,
+}
+
+fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option<usize>, Vec<Incomplete>) {
     let mut out = String::new();
+    let mut incomplete = Vec::new();
     let mut x: Fixed = 0;
     let mut y: Fixed = 0;
     let mut index = 0;
 
     while index < parts.len() {
         let Some(command) = parts[index].chars().next() else {
-            return (out, Some(index - 1));
+            return (out, Some(index - 1), incomplete);
         };
         index += 1;
         if !is_command(command) {
-            return (out, Some(index - 1));
+            return (out, Some(index - 1), incomplete);
         }
 
         let mut letter = command;
@@ -250,21 +303,30 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                 's' | 'q' | 'S' | 'Q' => 2,
                 'c' | 'C' => 3,
                 'z' | 'Z' => 0,
-                _ => return (out, Some(index - 1)),
+                _ => return (out, Some(index - 1), incomplete),
             };
             let arc = matches!(letter, 'a' | 'A');
             let pair = if matches!(letter, 'h' | 'v' | 'H' | 'V') { 1 } else { 2 };
             let needed = if arc { 5 } else { 0 } + points * pair;
 
-            // an incomplete or unreadable parameter set ends the path, the way SVG parsers read it
-            if index + needed > parts.len() {
-                return (out, Some(parts.len()));
+            // a command letter that takes the place of a parameter starts the next command, the way
+            // Android reads it: this one is left out and the rest of the path is kept
+            let available = (0..needed)
+                .take_while(|offset| parts.get(index + offset).is_some_and(|token| !is_command_token(token)))
+                .count();
+            if available < needed {
+                if index + available == parts.len() {
+                    return (out, Some(parts.len()), incomplete); // the data ends in the middle of a set
+                }
+                incomplete.push(Incomplete { letter, got: available, needed });
+                index += available;
+                break;
             }
             let mut numbers = Vec::with_capacity(needed);
             for offset in 0..needed {
                 match fixed::parse(&parts[index + offset]) {
                     Ok(number) => numbers.push(number),
-                    Err(_) => return (out, Some(index + offset)),
+                    Err(_) => return (out, Some(index + offset), incomplete),
                 }
             }
             // scale the lengths up front, one axis each, arc rotation and flags stay as written
@@ -279,7 +341,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                 if let Some(axis) = axis {
                     match axis.apply(*number) {
                         Some(scaled) => *number = scaled,
-                        None => return (out, Some(index + offset)),
+                        None => return (out, Some(index + offset), incomplete),
                     }
                 }
             }
@@ -316,7 +378,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                         to_x = numbers[base];
                         to_y = numbers[base + 1];
                     }
-                    _ => return (out, Some(index - 1)),
+                    _ => return (out, Some(index - 1), incomplete),
                 }
 
                 let hv = matches!(letter, 'h' | 'v' | 'H' | 'V');
@@ -343,12 +405,18 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
             };
         }
     }
-    (out, None)
+    (out, None, incomplete)
 }
 
-/// Renders one path, warning about the dropped tail when the data is not a whole valid path.
+/// Renders one path, warning about the commands and tails the data did not spell out.
 fn path_data(parts: &[String], relative: bool, scale: Scale, source: &str) -> String {
-    let (path, dropped) = build_path(parts, relative, scale);
+    let (path, dropped, incomplete) = build_path(parts, relative, scale);
+    for skipped in &incomplete {
+        eprintln!(
+            "{source}: \"{}\" has {} of {} parameters, the command was skipped",
+            skipped.letter, skipped.got, skipped.needed
+        );
+    }
     if let Some(index) = dropped {
         match parts.get(index) {
             Some(token) => eprintln!("{source}: \"{token}\" is not a path command, the tail was dropped"),
