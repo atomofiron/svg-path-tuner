@@ -78,6 +78,7 @@ fn xml_files(input: &str) -> Vec<String> {
 fn work(coordination: Option<Coordination>) -> Rslt<()> {
     let stdin = io::stdin();
     let mut line = String::new();
+    "Ctrl-C to exit".println();
     loop {
         "input path: ".print();
 
