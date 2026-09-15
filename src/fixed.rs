@@ -80,13 +80,16 @@ pub fn format(value: Fixed) -> String {
 
 /// Formats the ratio `numerator / denominator` in the output precision.
 pub fn format_ratio(numerator: i64, denominator: i64) -> String {
-    format(scaled(UNIT, numerator, denominator))
+    match scaled(UNIT, numerator, denominator) {
+        Some(value) => format(value),
+        None => format!("{numerator}/{denominator}"),
+    }
 }
 
-/// Multiplies by `numerator / denominator`, rounding the result away from zero.
-pub fn scaled(value: Fixed, numerator: i64, denominator: i64) -> Fixed {
+/// Multiplies by `numerator / denominator`, `None` when the result leaves the fixed point range.
+pub fn scaled(value: Fixed, numerator: i64, denominator: i64) -> Option<Fixed> {
     let value = value as i128 * numerator as i128;
-    i64::try_from(round_divide(value, denominator as i128)).expect("value is too large")
+    i64::try_from(round_divide(value, denominator as i128)).ok()
 }
 
 const OUTPUT_UNIT: i64 = 10_i64.pow(DECIMALS);

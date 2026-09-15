@@ -19,7 +19,7 @@ impl Ratio {
         Ratio { numerator: 1, denominator: 1 }
     }
 
-    pub fn apply(&self, value: Fixed) -> Fixed {
+    pub fn apply(&self, value: Fixed) -> Option<Fixed> {
         fixed::scaled(value, self.numerator, self.denominator)
     }
 }

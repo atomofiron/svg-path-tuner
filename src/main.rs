@@ -30,18 +30,30 @@ fn main() {
     }
 
     if let Some(target) = args.target {
+        let mut skipped = 0;
         for file in &args.files {
-            tune_file(file, args.size, target);
+            if !tune_file(file, args.size, target) {
+                skipped += 1;
+            }
+        }
+        if skipped > 0 {
+            exit(1);
         }
     }
 }
 
 fn work(coordination: Option<Coordination>) {
     print!("input path: ");
-    io::stdout().flush().unwrap();
+    if let Err(error) = io::stdout().flush() {
+        eprintln!("stdout: {error}");
+        exit(1);
+    }
 
     let mut line = String::new();
-    io::stdin().read_line(&mut line).unwrap();
+    if let Err(error) = io::stdin().read_line(&mut line) {
+        eprintln!("stdin: {error}");
+        exit(1);
+    }
     if line.len() == 1 && line.chars().nth(0).unwrap() == '\n' {
         exit(0);
     }
@@ -59,13 +71,20 @@ fn work(coordination: Option<Coordination>) {
     }
 }
 
-fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) {
-    let xml = fs::read_to_string(file).unwrap_or_else(|error| panic!("{file}: {error}"));
+/// Rewrites one file, `false` when it was skipped and nothing was written.
+fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) -> bool {
+    let xml = match fs::read_to_string(file) {
+        Ok(xml) => xml,
+        Err(error) => {
+            eprintln!("{file}: {error}, the file was skipped");
+            return false;
+        }
+    };
     let scale = match Scale::fit(read_viewport(&xml), size) {
         Ok(scale) => scale,
         Err(error) => {
             eprintln!("{file}: {error}, the file was skipped");
-            return;
+            return false;
         }
     };
     let (xml, paths) = map_attribute(&xml, PATH_DATA, |value| {
@@ -79,8 +98,12 @@ fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) {
         }
         None => (xml, 0),
     };
-    fs::write(file, xml).unwrap_or_else(|error| panic!("{file}: {error}"));
+    if let Err(error) = fs::write(file, xml) {
+        eprintln!("{file}: {error}, the file was not written");
+        return false;
+    }
     println!("{file}: {paths} pathData, {viewports} viewport, scale {scale}");
+    true
 }
 
 /// Reads the viewport of the file, the ratios are computed against it.
@@ -232,7 +255,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                 's' | 'q' | 'S' | 'Q' => 2,
                 'c' | 'C' => 3,
                 'z' | 'Z' => 0,
-                _ => panic!("command {letter}, index {}", index - 1),
+                _ => return (out, Some(index - 1)),
             };
             let arc = matches!(letter, 'a' | 'A');
             let pair = if matches!(letter, 'h' | 'v' | 'H' | 'V') { 1 } else { 2 };
@@ -249,6 +272,22 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                     Err(_) => return (out, Some(index + offset)),
                 }
             }
+            // scale the lengths up front, one axis each, arc rotation and flags stay as written
+            for (offset, number) in numbers.iter_mut().enumerate() {
+                let axis = match letter {
+                    'h' | 'H' => Some(scale.x),
+                    'v' | 'V' => Some(scale.y),
+                    'a' | 'A' if offset < 2 => Some(if offset == 0 { scale.x } else { scale.y }),
+                    'a' | 'A' if offset < 5 => None, // rotation, large-arc, sweep
+                    _ => Some(if (if arc { offset - 5 } else { offset }) % 2 == 0 { scale.x } else { scale.y }),
+                };
+                if let Some(axis) = axis {
+                    match axis.apply(*number) {
+                        Some(scaled) => *number = scaled,
+                        None => return (out, Some(index + offset)),
+                    }
+                }
+            }
 
             if relative {
                 out.push(letter.to_ascii_lowercase());
@@ -257,10 +296,8 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
             }
 
             if arc {
-                let rx = scale.x.apply(numbers[0]);
-                write_coordinate(&mut out, rx, false);
-                let ry = scale.y.apply(numbers[1]);
-                write_coordinate(&mut out, ry, true);
+                write_coordinate(&mut out, numbers[0], false);
+                write_coordinate(&mut out, numbers[1], true);
                 write_part(&mut out, &parts[index + 2], true);
                 write_part(&mut out, &parts[index + 3], true);
                 write_part(&mut out, &parts[index + 4], true);
@@ -272,19 +309,19 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
             for point in 0..points {
                 let base = (if arc { 5 } else { 0 }) + point * pair;
                 match letter {
-                    'h' => { to_x = x + scale.x.apply(numbers[base]); }
-                    'v' => { to_y = y + scale.y.apply(numbers[base]); }
-                    'H' => { to_x = scale.x.apply(numbers[base]); }
-                    'V' => { to_y = scale.y.apply(numbers[base]); }
+                    'h' => { to_x = x + numbers[base]; }
+                    'v' => { to_y = y + numbers[base]; }
+                    'H' => { to_x = numbers[base]; }
+                    'V' => { to_y = numbers[base]; }
                     'm' | 'l' | 't' | 'c' | 's' | 'q' | 'a' => {
-                        to_x = x + scale.x.apply(numbers[base]);
-                        to_y = y + scale.y.apply(numbers[base + 1]);
+                        to_x = x + numbers[base];
+                        to_y = y + numbers[base + 1];
                     }
                     'M' | 'L' | 'T' | 'C' | 'S' | 'Q' | 'A' => {
-                        to_x = scale.x.apply(numbers[base]);
-                        to_y = scale.y.apply(numbers[base + 1]);
+                        to_x = numbers[base];
+                        to_y = numbers[base + 1];
                     }
-                    _ => panic!(),
+                    _ => return (out, Some(index - 1)),
                 }
 
                 let hv = matches!(letter, 'h' | 'v' | 'H' | 'V');
