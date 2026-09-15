@@ -2,7 +2,7 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 
 use crate::coordination::Coordination;
-use crate::scale::Scale;
+use crate::size::Size;
 
 /// Scales a vector path: reads one from stdin, or rewrites Android vector .xml files in place.
 #[derive(Parser)]
@@ -12,9 +12,9 @@ pub struct Args {
     #[arg(value_name = "FILE", value_parser = xml_file)]
     pub files: Vec<String>,
 
-    /// scale ratio, 2 or /2
-    #[arg(short, long, default_value = "1")]
-    pub scale: Scale,
+    /// target viewport size, W or WxH, the ratios come from each file viewport
+    #[arg(short, long)]
+    pub size: Option<Size>,
 
     /// target coordination: r (relative) or a (absolute), required for files
     #[arg(short, long, value_enum)]
@@ -22,11 +22,19 @@ pub struct Args {
 }
 
 impl Args {
-    /// Files need an explicit target coordination, clap cannot express that as an argument rule.
+    /// Rules clap cannot express: files need a target, a size needs files.
     pub fn verify(&self) {
         if !self.files.is_empty() && self.target.is_none() {
             Self::command()
                 .error(ErrorKind::MissingRequiredArgument, "-t r or -t a is required for files")
+                .exit();
+        }
+        if self.files.is_empty() && self.size.is_some() {
+            Self::command()
+                .error(
+                    ErrorKind::InvalidValue,
+                    "-s is a viewport size, it needs .xml files to compute the ratios from",
+                )
                 .exit();
         }
     }
