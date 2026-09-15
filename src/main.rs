@@ -1,13 +1,17 @@
 mod args;
+mod data;
 mod ext;
 mod fixed;
 
-use crate::args::{Args, Mode};
+use crate::args::Args;
+use crate::data::incomplete::Incomplete;
+use crate::data::stopped::Stopped;
 use crate::ext::Rslt;
 use crate::ext::path::is_xml;
 use crate::ext::print::PrintExt;
 use crate::fixed::Fixed;
 use args::coordination::Coordination;
+use args::mode::Mode;
 use args::scale::Scale;
 use args::size::Size;
 use clap::Parser;
@@ -94,13 +98,15 @@ fn work(coordination: Option<Coordination>) -> Rslt<()> {
         parts.join(", ").println();
         let scale = Scale::identity();
         match coordination {
-            Some(Coordination::Relative) => path_data(&parts, true, scale, "input path").println(),
-            Some(Coordination::Absolute) => path_data(&parts, false, scale, "input path").println(),
+            Some(Coordination::Relative) => path_data(&parts, true, scale, "input path")?.println(),
+            Some(Coordination::Absolute) => path_data(&parts, false, scale, "input path")?.println(),
             None => {
+                let relative = path_data(&parts, true, scale, "input path")?;
+                let absolute = path_data(&parts, false, scale, "input path")?;
                 "relative:".println();
-                path_data(&parts, true, scale, "input path").println();
+                relative.println();
                 "absolute:".println();
-                path_data(&parts, false, scale, "input path").println();
+                absolute.println();
             }
         }
     }
@@ -120,13 +126,20 @@ fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) -> Rslt
     }
     let scale = Scale::fit(read_viewport(&xml), size)
         .map_err(|error| format!("{file}: {error}, the file was skipped"))?;
+    if !fits(scale, &xml) {
+        return Err(format!(
+            "{file}: the coordinates do not fit the fixed point math at {scale}, the file was skipped"
+        )
+        .into());
+    }
     let (xml, paths) = map_attribute(&xml, PATH_DATA, |value| {
         scale_path_data(value, file, scale, coordination)
-    });
+    })
+    .map_err(|error| format!("{error}, the file was skipped"))?;
     let (xml, viewports) = match size {
         Some(size) => {
-            let (xml, widths) = map_attribute(&xml, VIEWPORT_WIDTH, |_| fixed::format(size.width));
-            let (xml, heights) = map_attribute(&xml, VIEWPORT_HEIGHT, |_| fixed::format(size.height));
+            let (xml, widths) = map_attribute(&xml, VIEWPORT_WIDTH, |_| Ok(fixed::format(size.width)))?;
+            let (xml, heights) = map_attribute(&xml, VIEWPORT_HEIGHT, |_| Ok(fixed::format(size.height)))?;
             (xml, widths + heights)
         }
         None => (xml, 0),
@@ -141,6 +154,18 @@ fn read_viewport(xml: &str) -> Option<(Fixed, Fixed)> {
     let width = fixed::parse(attribute_value(xml, VIEWPORT_WIDTH)?).ok()?;
     let height = fixed::parse(attribute_value(xml, VIEWPORT_HEIGHT)?).ok()?;
     Some((width, height))
+}
+
+/// Whether the fixed point math holds for the coordinates of the file at the given scale.
+fn fits(scale: Scale, xml: &str) -> bool {
+    let total = attribute_values(xml, PATH_DATA)
+        .into_iter()
+        .flat_map(|range| tokenize(&xml[range]))
+        .filter_map(|token| fixed::parse(&token).ok())
+        .fold(0_i128, |sum, value| sum + i128::from(value).abs());
+    // a relative coordinate is the difference of two positions, so the positions have to fit twice over
+    let total = i64::try_from(total.saturating_mul(2)).unwrap_or(i64::MAX);
+    scale.x.fits(total) && scale.y.fits(total)
 }
 
 fn attribute_value<'a>(xml: &'a str, attribute: &str) -> Option<&'a str> {
@@ -192,32 +217,32 @@ fn attribute_values(xml: &str, attribute: &str) -> Vec<Range<usize>> {
 }
 
 /// Rewrites every quoted value of `attribute`, keeping the rest of the document untouched.
-fn map_attribute(xml: &str, attribute: &str, mut map: impl FnMut(&str) -> String) -> (String, usize) {
+fn map_attribute(xml: &str, attribute: &str, mut map: impl FnMut(&str) -> Rslt<String>) -> Rslt<(String, usize)> {
     let ranges = attribute_values(xml, attribute);
     if ranges.is_empty() {
-        return (xml.to_owned(), 0);
+        return Ok((xml.to_owned(), 0));
     }
     let mut out = String::with_capacity(xml.len());
     let mut position = 0;
     for range in &ranges {
         out.push_str(&xml[position..range.start]);
-        out.push_str(&map(&xml[range.clone()]));
+        out.push_str(&map(&xml[range.clone()])?);
         position = range.end;
     }
     out.push_str(&xml[position..]);
-    (out, ranges.len())
+    Ok((out, ranges.len()))
 }
 
-fn scale_path_data(value: &str, file: &str, scale: Scale, coordination: Coordination) -> String {
+fn scale_path_data(value: &str, file: &str, scale: Scale, coordination: Coordination) -> Rslt<String> {
     let parts = tokenize(value);
     if parts.is_empty() {
-        return value.to_owned();
+        return Ok(value.to_owned());
     }
-    let path = path_data(&parts, coordination == Coordination::Relative, scale, file);
+    let path = path_data(&parts, coordination == Coordination::Relative, scale, file)?;
     if path.is_empty() {
-        return value.to_owned(); // nothing scalable in there, the original text stays
+        return Ok(value.to_owned()); // nothing scalable in there, the original text stays
     }
-    path
+    Ok(path)
 }
 
 fn tokenize(input: &str) -> Vec<String> {
@@ -270,14 +295,7 @@ fn is_command_token(token: &str) -> bool {
     token.chars().next().is_some_and(is_command)
 }
 
-/// A command that came without its parameters, the parser leaves it out and keeps the rest.
-struct Incomplete {
-    letter: char,
-    got: usize,
-    needed: usize,
-}
-
-fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option<usize>, Vec<Incomplete>) {
+fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option<Stopped>, Vec<Incomplete>) {
     let mut out = String::new();
     let mut incomplete = Vec::new();
     let mut x: Fixed = 0;
@@ -286,11 +304,11 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
 
     while index < parts.len() {
         let Some(command) = parts[index].chars().next() else {
-            return (out, Some(index - 1), incomplete);
+            return (out, Some(Stopped::Command(index)), incomplete);
         };
         index += 1;
         if !is_command(command) {
-            return (out, Some(index - 1), incomplete);
+            return (out, Some(Stopped::Command(index - 1)), incomplete);
         }
 
         let mut letter = command;
@@ -301,7 +319,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                 's' | 'q' | 'S' | 'Q' => 2,
                 'c' | 'C' => 3,
                 'z' | 'Z' => 0,
-                _ => return (out, Some(index - 1), incomplete),
+                _ => return (out, Some(Stopped::Command(index - 1)), incomplete),
             };
             let arc = matches!(letter, 'a' | 'A');
             let pair = if matches!(letter, 'h' | 'v' | 'H' | 'V') { 1 } else { 2 };
@@ -314,7 +332,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                 .count();
             if available < needed {
                 if index + available == parts.len() {
-                    return (out, Some(parts.len()), incomplete); // the data ends in the middle of a set
+                    return (out, Some(Stopped::End), incomplete); // the data ends in the middle of a set
                 }
                 incomplete.push(Incomplete { letter, got: available, needed });
                 index += available;
@@ -324,7 +342,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
             for offset in 0..needed {
                 match fixed::parse(&parts[index + offset]) {
                     Ok(number) => numbers.push(number),
-                    Err(_) => return (out, Some(index + offset), incomplete),
+                    Err(_) => return (out, Some(Stopped::Parameter(index + offset)), incomplete),
                 }
             }
             // scale the lengths up front, one axis each, arc rotation and flags stay as written
@@ -339,7 +357,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
                 if let Some(axis) = axis {
                     match axis.apply(*number) {
                         Some(scaled) => *number = scaled,
-                        None => return (out, Some(index + offset), incomplete),
+                        None => return (out, Some(Stopped::Overflow), incomplete),
                     }
                 }
             }
@@ -363,29 +381,36 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
 
             for point in 0..points {
                 let base = (if arc { 5 } else { 0 }) + point * pair;
-                match letter {
-                    'h' => { to_x = x + numbers[base]; }
-                    'v' => { to_y = y + numbers[base]; }
-                    'H' => { to_x = numbers[base]; }
-                    'V' => { to_y = numbers[base]; }
+                let next = match letter {
+                    'h' => (x.checked_add(numbers[base]), Some(y)),
+                    'v' => (Some(x), y.checked_add(numbers[base])),
+                    'H' => (Some(numbers[base]), Some(y)),
+                    'V' => (Some(x), Some(numbers[base])),
                     'm' | 'l' | 't' | 'c' | 's' | 'q' | 'a' => {
-                        to_x = x + numbers[base];
-                        to_y = y + numbers[base + 1];
+                        (x.checked_add(numbers[base]), y.checked_add(numbers[base + 1]))
                     }
-                    'M' | 'L' | 'T' | 'C' | 'S' | 'Q' | 'A' => {
-                        to_x = numbers[base];
-                        to_y = numbers[base + 1];
-                    }
-                    _ => return (out, Some(index - 1), incomplete),
-                }
+                    'M' | 'L' | 'T' | 'C' | 'S' | 'Q' | 'A' => (Some(numbers[base]), Some(numbers[base + 1])),
+                    _ => return (out, Some(Stopped::Command(index - 1)), incomplete),
+                };
+                let (Some(next_x), Some(next_y)) = next else {
+                    return (out, Some(Stopped::Overflow), incomplete);
+                };
+                to_x = next_x;
+                to_y = next_y;
 
                 let hv = matches!(letter, 'h' | 'v' | 'H' | 'V');
                 let a = point > 0 || arc;
                 if "mahlcsqtMAHLCSQT".contains(letter) {
-                    write_coordinate(&mut out, if relative { to_x - x } else { to_x }, a);
+                    let Some(value) = (if relative { to_x.checked_sub(x) } else { Some(to_x) }) else {
+                        return (out, Some(Stopped::Overflow), incomplete);
+                    };
+                    write_coordinate(&mut out, value, a);
                 }
                 if "mavlcsqtMAVLCSQT".contains(letter) {
-                    write_coordinate(&mut out, if relative { to_y - y } else { to_y }, !hv);
+                    let Some(value) = (if relative { to_y.checked_sub(y) } else { Some(to_y) }) else {
+                        return (out, Some(Stopped::Overflow), incomplete);
+                    };
+                    write_coordinate(&mut out, value, !hv);
                 }
             }
             index += needed;
@@ -407,21 +432,29 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
 }
 
 /// Renders one path, warning about the commands and tails the data did not spell out.
-fn path_data(parts: &[String], relative: bool, scale: Scale, source: &str) -> String {
-    let (path, dropped, incomplete) = build_path(parts, relative, scale);
+fn path_data(parts: &[String], relative: bool, scale: Scale, source: &str) -> Rslt<String> {
+    let (path, stopped, incomplete) = build_path(parts, relative, scale);
     for skipped in &incomplete {
-        eprintln!(
-            "{source}: \"{}\" has {} of {} parameters, the command was skipped",
-            skipped.letter, skipped.got, skipped.needed
-        );
+        eprintln!("{source}: \"{}\" has {} of {} parameters, the command was skipped", skipped.letter, skipped.got, skipped.needed);
     }
-    if let Some(index) = dropped {
-        match parts.get(index) {
-            Some(token) => eprintln!("{source}: \"{token}\" is not a path command, the tail was dropped"),
-            None => eprintln!("{source}: the path ends in the middle of a command, the tail was dropped"),
+    match stopped {
+        Some(Stopped::Parameter(index)) => {
+            let token = parts.get(index).map_or("", String::as_str);
+            eprintln!("{source}: \"{token}\" is not a number, the tail was dropped");
         }
+        Some(Stopped::Command(index)) => {
+            let token = parts.get(index).map_or("", String::as_str);
+            eprintln!("{source}: \"{token}\" is not a path command, the tail was dropped");
+        }
+        Some(Stopped::End) => {
+            eprintln!("{source}: the path ends in the middle of a command, the tail was dropped");
+        }
+        Some(Stopped::Overflow) => {
+            return Err(format!("{source}: the coordinates do not fit the fixed point math at {scale}").into());
+        }
+        None => {}
     }
-    path
+    Ok(path)
 }
 
 fn write_part(out: &mut String, part: &str, allow_separator: bool) {

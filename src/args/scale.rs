@@ -23,6 +23,11 @@ impl Ratio {
     pub fn apply(&self, value: Fixed) -> Option<Fixed> {
         fixed::scaled(value, self.numerator, self.denominator)
     }
+
+    /// Whether the ratio keeps `value` inside the fixed point range.
+    pub fn fits(&self, value: Fixed) -> bool {
+        self.apply(value).is_some()
+    }
 }
 
 /// Ratios of both axes, computed from the file viewport and the target size.

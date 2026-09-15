@@ -5,11 +5,13 @@ use std::path::Path;
 
 use crate::ext::path::is_xml;
 use coordination::Coordination;
+use mode::Mode;
 use size::Size;
 
 pub mod coordination;
 pub mod scale;
 pub mod size;
+pub mod mode;
 
 /// Scales a vector path: reads one from stdin, or rewrites Android vector .xml files in place.
 #[derive(Parser)]
@@ -26,14 +28,6 @@ pub struct Args {
     /// target coordination: r (relative) or a (absolute), required for files
     #[arg(short, long, value_enum)]
     target: Option<Coordination>,
-}
-
-/// What the arguments ask for.
-pub enum Mode {
-    /// One path per line from stdin, both coordinations are printed without a target.
-    Stdin { coordination: Option<Coordination> },
-    /// Inputs scaled and rewritten in place, a folder gives the .xml files in it.
-    Files { coordination: Coordination, files: Vec<String>, size: Option<Size> },
 }
 
 impl Args {
