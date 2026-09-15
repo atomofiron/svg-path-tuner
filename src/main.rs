@@ -1,10 +1,13 @@
 mod args;
 mod coordination;
+mod ext;
 mod fixed;
 mod scale;
 mod size;
-use crate::args::Args;
+
+use crate::args::{Args, Mode};
 use crate::coordination::Coordination;
+use crate::ext::Rslt;
 use crate::fixed::Fixed;
 use crate::scale::Scale;
 use crate::size::Size;
@@ -12,81 +15,73 @@ use clap::Parser;
 use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
-use std::process::exit;
+use crate::ext::print::PrintExt;
 
 const SEPARATOR: char = ' ';
 const PATH_DATA: &str = "android:pathData";
 const VIEWPORT_WIDTH: &str = "android:viewportWidth";
 const VIEWPORT_HEIGHT: &str = "android:viewportHeight";
 
-fn main() {
-    let args = Args::parse();
-    args.verify();
+fn main() -> Rslt<()> {
+    let mode = match Args::try_parse().and_then(Args::into_mode) {
+        Ok(mode) => mode,
+        Err(error) => error.exit(), // clap prints the error itself, keeping clap own exit code
+    };
 
-    if args.files.is_empty() {
-        loop {
-            work(args.target);
-        }
-    }
-
-    if let Some(target) = args.target {
-        let mut skipped = 0;
-        for file in &args.files {
-            if !tune_file(file, args.size, target) {
-                skipped += 1;
+    match mode {
+        Mode::Stdin { coordination } => work(coordination),
+        Mode::Files { coordination, files, size } => {
+            let mut skipped = 0;
+            for file in &files {
+                if let Err(error) = tune_file(file, size, coordination) {
+                    error.eprintln();
+                    skipped += 1;
+                }
+            }
+            match skipped {
+                0 => Ok(()),
+                skipped => Err(format!("{skipped} of {} files were skipped", files.len()).into()),
             }
         }
-        if skipped > 0 {
-            exit(1);
-        }
     }
 }
 
-fn work(coordination: Option<Coordination>) {
-    print!("input path: ");
-    if let Err(error) = io::stdout().flush() {
-        eprintln!("stdout: {error}");
-        exit(1);
-    }
-
+/// Renders the paths read from stdin one per line, an empty line or the end of the input ends it.
+fn work(coordination: Option<Coordination>) -> Rslt<()> {
+    let stdin = io::stdin();
     let mut line = String::new();
-    if let Err(error) = io::stdin().read_line(&mut line) {
-        eprintln!("stdin: {error}");
-        exit(1);
-    }
-    if line.len() == 1 && line.chars().nth(0).unwrap() == '\n' {
-        exit(0);
-    }
+    loop {
+        "input path: ".print();
 
-    let parts = tokenize(line.trim());
-    println!("parts: {}", parts.join(", "));
-    let scale = Scale::identity();
-    match coordination {
-        Some(Coordination::Relative) => println!("{}", path_data(&parts, true, scale, "input path")),
-        Some(Coordination::Absolute) => println!("{}", path_data(&parts, false, scale, "input path")),
-        None => {
-            println!("\nrelative: {}", path_data(&parts, true, scale, "input path"));
-            println!("\nabsolute: {}", path_data(&parts, false, scale, "input path"));
+        line.clear();
+        stdin.read_line(&mut line)
+            .map_err(|error| format!("stdin: {error}"))?;
+        if line.trim().is_empty() {
+            continue
+        }
+
+        let parts = tokenize(line.trim());
+        "parts:".println();
+        parts.join(", ").println();
+        let scale = Scale::identity();
+        match coordination {
+            Some(Coordination::Relative) => path_data(&parts, true, scale, "input path").println(),
+            Some(Coordination::Absolute) => path_data(&parts, false, scale, "input path").println(),
+            None => {
+                "relative:".println();
+                path_data(&parts, true, scale, "input path").println();
+                "absolute:".println();
+                path_data(&parts, false, scale, "input path").println();
+            }
         }
     }
 }
 
-/// Rewrites one file, `false` when it was skipped and nothing was written.
-fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) -> bool {
-    let xml = match fs::read_to_string(file) {
-        Ok(xml) => xml,
-        Err(error) => {
-            eprintln!("{file}: {error}, the file was skipped");
-            return false;
-        }
-    };
-    let scale = match Scale::fit(read_viewport(&xml), size) {
-        Ok(scale) => scale,
-        Err(error) => {
-            eprintln!("{file}: {error}, the file was skipped");
-            return false;
-        }
-    };
+/// Rewrites one file in place, an error when it was skipped and nothing was written.
+fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) -> Rslt<()> {
+    let xml = fs::read_to_string(file).map_err(|error| format!("{file}: {error}, the file was skipped"))?;
+    let scale = Scale::fit(read_viewport(&xml), size)
+        .map_err(|error| format!("{file}: {error}, the file was skipped"))?;
     let (xml, paths) = map_attribute(&xml, PATH_DATA, |value| {
         scale_path_data(value, file, scale, coordination)
     });
@@ -98,12 +93,9 @@ fn tune_file(file: &str, size: Option<Size>, coordination: Coordination) -> bool
         }
         None => (xml, 0),
     };
-    if let Err(error) = fs::write(file, xml) {
-        eprintln!("{file}: {error}, the file was not written");
-        return false;
-    }
+    fs::write(file, xml).map_err(|error| format!("{file}: {error}, the file was not written"))?;
     println!("{file}: {paths} pathData, {viewports} viewport, scale {scale}");
-    true
+    Ok(())
 }
 
 /// Reads the viewport of the file, the ratios are computed against it.
@@ -127,14 +119,15 @@ fn attribute_values(xml: &str, attribute: &str) -> Vec<Range<usize>> {
         let name = position + found;
         let name_end = name + attribute.len();
 
-        if let Some(comment) = xml[position..].find("<!--").map(|found| position + found) {
-            if comment < name { // an attribute that is commented out is not an attribute
-                position = match xml[comment..].find("-->") {
-                    Some(end) => comment + end + 3,
-                    None => xml.len(),
-                };
-                continue;
-            }
+        // an attribute that is commented out is not an attribute
+        if let Some(comment) = xml[position..].find("<!--").map(|found| position + found)
+            && comment < name
+        {
+            position = match xml[comment..].find("-->") {
+                Some(end) => comment + end + 3,
+                None => xml.len(),
+            };
+            continue;
         }
 
         let tail = &xml[name_end..];
@@ -241,7 +234,9 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
     let mut index = 0;
 
     while index < parts.len() {
-        let command = parts[index].chars().nth(0).unwrap();
+        let Some(command) = parts[index].chars().next() else {
+            return (out, Some(index - 1));
+        };
         index += 1;
         if !is_command(command) {
             return (out, Some(index - 1));
@@ -338,7 +333,7 @@ fn build_path(parts: &[String], relative: bool, scale: Scale) -> (String, Option
             y = to_y;
 
             // a command reuses its letter for the implicit parameter sets, moveto turns into lineto
-            if points == 0 || index == parts.len() || is_command(parts[index].chars().nth(0).unwrap()) {
+            if points == 0 || index == parts.len() || parts[index].chars().next().is_some_and(is_command) {
                 break;
             }
             letter = match letter {

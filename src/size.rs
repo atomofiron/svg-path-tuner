@@ -14,7 +14,7 @@ impl FromStr for Size {
 
     fn from_str(value: &str) -> Result<Size, String> {
         let (width, height) = match value.split_once(['x', 'X']) {
-            Some((width, height)) => (width, height),
+            Some(size) => size,
             None => (value, value),
         };
         Ok(Size { width: side(width, value)?, height: side(height, value)? })

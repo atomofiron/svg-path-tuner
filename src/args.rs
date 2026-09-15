@@ -10,33 +10,44 @@ use crate::size::Size;
 pub struct Args {
     /// .xml files to scale and rewrite in place
     #[arg(value_name = "FILE", value_parser = xml_file)]
-    pub files: Vec<String>,
+    files: Vec<String>,
 
     /// target viewport size, W or WxH, the ratios come from each file viewport
     #[arg(short, long)]
-    pub size: Option<Size>,
+    size: Option<Size>,
 
     /// target coordination: r (relative) or a (absolute), required for files
     #[arg(short, long, value_enum)]
-    pub target: Option<Coordination>,
+    target: Option<Coordination>,
+}
+
+/// What the arguments ask for.
+pub enum Mode {
+    /// One path per line from stdin, both coordinations are printed without a target.
+    Stdin { coordination: Option<Coordination> },
+    /// Files scaled and rewritten in place.
+    Files { coordination: Coordination, files: Vec<String>, size: Option<Size> },
 }
 
 impl Args {
     /// Rules clap cannot express: files need a target, a size needs files.
-    pub fn verify(&self) {
-        if !self.files.is_empty() && self.target.is_none() {
-            Self::command()
-                .error(ErrorKind::MissingRequiredArgument, "-t r or -t a is required for files")
-                .exit();
-        }
-        if self.files.is_empty() && self.size.is_some() {
-            Self::command()
-                .error(
+    pub fn into_mode(self) -> Result<Mode, clap::Error> {
+        if self.files.is_empty() {
+            if self.size.is_some() {
+                return Err(Self::command().error(
                     ErrorKind::InvalidValue,
                     "-s is a viewport size, it needs .xml files to compute the ratios from",
-                )
-                .exit();
+                ));
+            }
+            return Ok(Mode::Stdin { coordination: self.target });
         }
+        let Some(coordination) = self.target else {
+            return Err(Self::command().error(
+                ErrorKind::MissingRequiredArgument,
+                "-t r or -t a is required for files",
+            ));
+        };
+        Ok(Mode::Files { coordination, files: self.files, size: self.size })
     }
 }
 

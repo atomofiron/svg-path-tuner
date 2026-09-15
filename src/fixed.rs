@@ -4,6 +4,8 @@
 //! math (accumulation, deltas, scaling) is exact integer math and rounding happens exactly
 //! once per input value instead of on every floating point operation.
 
+use crate::ext::Rslt;
+
 /// A coordinate scaled by `10^PRECISION`.
 pub type Fixed = i64;
 
@@ -18,7 +20,7 @@ const PRECISION: u32 = 8;
 const UNIT: Fixed = 10_i64.pow(PRECISION);
 
 /// Parses `12`, `-4.5`, `.5`, `1.5e2` into fixed point, rounding away the digits past `PRECISION`.
-pub fn parse(token: &str) -> Result<Fixed, String> {
+pub fn parse(token: &str) -> Rslt<Fixed> {
     let invalid = || format!("{token} is not a number");
 
     let (negative, token) = match token.strip_prefix('-') {
@@ -37,10 +39,10 @@ pub fn parse(token: &str) -> Result<Fixed, String> {
         None => (mantissa, ""),
     };
     if integer.is_empty() && fraction.is_empty() {
-        return Err(invalid());
+        return Err(invalid().into());
     }
     if !integer.bytes().all(|b| b.is_ascii_digit()) || !fraction.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid());
+        return Err(invalid().into());
     }
 
     let digits = format!("{integer}{fraction}");
@@ -57,7 +59,7 @@ pub fn parse(token: &str) -> Result<Fixed, String> {
     };
     let value = if negative { -value } else { value };
 
-    i64::try_from(value).map_err(|_| format!("{token} is too large"))
+    i64::try_from(value).map_err(|_| format!("{token} is too large").into())
 }
 
 /// Formats fixed point as a plain decimal rounded to `DECIMALS`, exact and float free.

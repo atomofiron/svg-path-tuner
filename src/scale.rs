@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 
+use crate::ext::Rslt;
 use crate::fixed::{self, Fixed};
 use crate::size::Size;
 
@@ -37,15 +38,15 @@ impl Scale {
     }
 
     /// Ratios that turn the `viewport` into the target `size`, no `size` means no scaling.
-    pub fn fit(viewport: Option<(Fixed, Fixed)>, size: Option<Size>) -> Result<Scale, String> {
+    pub fn fit(viewport: Option<(Fixed, Fixed)>, size: Option<Size>) -> Rslt<Scale> {
         let Some(size) = size else {
             return Ok(Scale::identity());
         };
         let Some((width, height)) = viewport else {
-            return Err("no viewport to compute the size against".to_owned());
+            return Err("no viewport to compute the size against".into());
         };
         if width <= 0 || height <= 0 {
-            return Err("the viewport is not greater than 0".to_owned());
+            return Err("the viewport is not greater than 0".into());
         }
         Ok(Scale { x: Ratio::new(size.width, width), y: Ratio::new(size.height, height) })
     }
