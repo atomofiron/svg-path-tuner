@@ -1,7 +1,7 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Build Win x86_64" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
     <option name="buildProfileId" value="dev" />
-    <option name="command" value="build --package svg-path-tuner --bin svg-path-tuner --target x86_64-pc-windows-gnu" />
+    <option name="command" value="build --package vector-path-tuner --bin vector-path-tuner --target x86_64-pc-windows-gnu" />
     <option name="workingDirectory" value="file://$PROJECT_DIR$" />
     <envs />
     <option name="emulateTerminal" value="true" />

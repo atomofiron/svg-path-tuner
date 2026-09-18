@@ -1,10 +1,10 @@
-# svg-path-tuner
+# vector-path-tuner
 
 `M 2 2 L 3 1 Z` <=> `M 8 8 L 12 4 Z` <=> `M 8 8 l 4 -4 z`  
 
 ## Usage
 
-`$ svg-path-tuner [-s size] [-t r|a] [path ...]`
+`$ vector-path-tuner [-s size] [-t r|a] [path ...]`
 
 - a positional argument is an `.xml` file or a folder with them: a folder gives the `.xml` files in it,
   without recursion into nested folders, every other file in the folder is ignored
@@ -29,18 +29,18 @@
 
 ## Example
 ```
-$ svg-path-tuner -t r                                                                                                                                              15:49:31
+$ vector-path-tuner -t r                                                                                                                                              15:49:31
 input path: M 8 8 L 12 4 Z
 parts: M, 8, 8, L, 12, 4, Z  # just for info
 relative: m8 8l4-4z
 absolute: M8 8L12 4Z
 input path:  # just press Enter to exit
 
-$ svg-path-tuner -s 12 -t a ic_add.xml ic_remove.xml
+$ vector-path-tuner -s 12 -t a ic_add.xml ic_remove.xml
 ic_add.xml: 2 pathData, 2 viewport, scale 0.5x0.5
 ic_remove.xml: 1 pathData, 2 viewport, scale 0.5x0.5
 
-$ svg-path-tuner -s 12 -t a app/src/main/res/drawable
+$ vector-path-tuner -s 12 -t a app/src/main/res/drawable
 ic_add.xml: 2 pathData, 2 viewport, scale 0.5x0.5
 ic_circle_shape.xml: no <vector> in the file, the file was skipped
 ```
